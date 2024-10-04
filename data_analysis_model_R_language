@@ -1,0 +1,183 @@
+# Load packages ----------------------------------------------------------------
+library(shiny)
+library(ggplot2)
+library(tools)
+library(DT)
+library(dplyr)
+library(rlang)
+library(shinythemes)
+
+# Load data --------------------------------------------------------------------
+marathon_data <- read.csv(file = "https://raw.githubusercontent.com/Ming-Kwok/S3729C-CWF/main/2022%20full%20marathon%20SG.csv", header = TRUE, sep = ",")
+
+# Convert "#N/A" to NA
+marathon_data[marathon_data == "#N/A"] <- NA
+
+# Convert relevant columns to numeric
+numeric_columns <- c("Net Mins" = "Net_Mins", "Gun Mins" = "Gun_Mins", "1st Half Mins" = "X1st_H_Mins", "2nd Half Mins" = "X2nd_H_Mins", "Speed km/h" = "Speed_full", "Speed 1st Half km/h" = "Speed_1st_H", "Speed 2nd Half km/h" = "Speed_2nd_H", "Pace Variation" = "Pace_variation")
+marathon_data[numeric_columns] <- lapply(marathon_data[numeric_columns], as.numeric)
+
+# Remove rows with NA values in numeric columns
+marathon_data <- marathon_data %>% filter(if_all(all_of(numeric_columns), ~ !is.na(.)))
+
+# Define UI --------------------------------------------------------------------
+ui <- navbarPage(
+  "Singapore Marathon 2022",
+  #shinythemes::themeSelector(),
+  tabPanel("Histogram",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("hist_y", "Y-axis:", choices = numeric_columns, selected = "Net_Mins"),
+               selectInput("hist_x", "X-axis:", choices = c("Gender", "Group", "Sub_Group", "Category", "Pace_Strategy"), selected = "Gender"),
+               checkboxInput("hist_show_data", "Show Data table", value = TRUE),
+               sliderInput("bins","Number of bins:", min = 1, max =50, value =30),
+               sliderInput("hist_alpha", "Alpha:", min = 0, max = 1, value = 0.5),
+               textInput("hist_plot_title", "Plot title", placeholder = "Enter text to be used as plot title"),
+               actionButton("hist_update_plot_title", "Update plot title")
+             ),
+             mainPanel(
+               plotOutput("histogram"),
+               dataTableOutput("hist_marathontable")
+             )
+           )
+  ),
+  
+  tabPanel("Boxplot",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("box_y", "Y-axis:", choices = numeric_columns, selected = "Net_Mins"),
+               selectInput("box_x", "X-axis:", choices = c("Gender", "Group", "Sub_Group", "Category", "Pace_Strategy"), selected = "Gender"),
+               checkboxInput("box_show_data", "Show Data table", value = TRUE),
+               sliderInput("box_alpha", "Alpha:", min = 0, max = 1, value = 0.5),
+               textInput("box_plot_title", "Plot title", placeholder = "Enter text to be used as plot title"),
+               actionButton("box_update_plot_title", "Update plot title")
+             ),
+             mainPanel(
+               plotOutput("boxplot"),
+               verbatimTextOutput("anova_output"),
+               dataTableOutput("box_marathontable")
+             )
+           )
+  ),
+  
+  tabPanel("Scatter Plot",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("scatter_y", "Y-axis:", choices = numeric_columns, selected = "Gun_Mins"),
+               selectInput("scatter_x", "X-axis:", choices = numeric_columns, selected = "Net_Mins"),
+               selectInput("scatter_z", "Color by:", choices = c("Gender", "Group", "Sub_Group", "Category", "Pace_Strategy"), selected = "Gender"),
+               checkboxInput("scatter_show_data", "Show Data table", value = FALSE),
+               sliderInput("scatter_alpha", "Alpha:", min = 0, max = 1, value = 0.5),
+               sliderInput("scatter_size", "Size:", min = 0, max = 5, value = 2),
+               textInput("scatter_plot_title", "Plot title", placeholder = "Enter text to be used as plot title"),
+               actionButton("scatter_update_plot_title", "Update plot title")
+             ),
+             mainPanel(
+               plotOutput("scatterplot", brush = "plot_brush"),
+               textOutput("correlation"),
+               verbatimTextOutput(outputId = "lmoutput"),
+               dataTableOutput("scatter_marathontable"),
+               dataTableOutput("brushedPoints")
+             )
+           )
+  )
+)
+
+# Define server ----------------------------------------------------------------
+server <- function(input, output, session) {
+  
+  # Histogram
+  hist_plot_title <- eventReactive(input$hist_update_plot_title, { toTitleCase(input$hist_plot_title) })
+  
+  output$histogram <- renderPlot({
+    ggplot(data = marathon_data, aes(x = .data[[input$hist_y]], fill = .data[[input$hist_x]])) +
+      geom_histogram(alpha = input$hist_alpha, position = "identity", bins = input$bins) +
+      labs(title = hist_plot_title(), x = input$hist_y, y = "Count") +
+      theme_minimal()
+  })
+  
+  output$hist_marathontable <- renderDataTable({
+    if(input$hist_show_data){
+      summary_stats <- marathon_data %>%
+        group_by(!!sym(input$hist_x)) %>%
+        summarise(
+          Min = paste0(round(min(!!sym(input$hist_y), na.rm = TRUE), 2), ""),
+          Mean = paste0(round(mean(!!sym(input$hist_y), na.rm = TRUE), 2), ""),
+          Median = paste0(round(median(!!sym(input$hist_y), na.rm = TRUE), 2), ""),
+          Max = paste0(round(max(!!sym(input$hist_y), na.rm = TRUE), 2), "")
+        )
+      
+      DT::datatable(data = summary_stats, options = list(pageLength = 10), rownames = FALSE)
+    }
+  })
+  
+  # Boxplot
+  box_plot_title <- eventReactive(input$box_update_plot_title, { toTitleCase(input$box_plot_title) })
+  
+  output$boxplot <- renderPlot({
+    ggplot(data = marathon_data, aes(x = .data[[input$box_x]], y = .data[[input$box_y]], fill = .data[[input$box_x]])) +
+      geom_boxplot(alpha = input$box_alpha) +
+      labs(title = box_plot_title())
+  })
+  
+  output$box_marathontable <- renderDataTable({
+    if(input$box_show_data){
+      summary_stats <- marathon_data %>%
+        group_by(!!sym(input$box_x)) %>%
+        summarise(
+          Min = paste0(round(min(!!sym(input$box_y), na.rm = TRUE), 2), ""),
+          Mean = paste0(round(mean(!!sym(input$box_y), na.rm = TRUE), 2), ""),
+          Median = paste0(round(median(!!sym(input$box_y), na.rm = TRUE), 2), ""),
+          Max = paste0(round(max(!!sym(input$box_y), na.rm = TRUE), 2), "")
+        )
+      
+      DT::datatable(data = summary_stats, options = list(pageLength = 10), rownames = FALSE)
+    }
+  })
+  
+  # ANOVA output
+  output$anova_output <- renderPrint({
+    formula <- as.formula(paste(input$box_y, "~", input$box_x))
+    anova_result <- aov(formula, data = marathon_data)
+    summary(anova_result)
+  })
+  
+  # Scatter Plot
+  scatter_plot_title <- eventReactive(input$scatter_update_plot_title, { toTitleCase(input$scatter_plot_title) })
+  
+  output$scatterplot <- renderPlot({
+    ggplot(data = marathon_data, aes(x = .data[[input$scatter_x]], y = .data[[input$scatter_y]], color = .data[[input$scatter_z]])) +
+      geom_point(alpha = input$scatter_alpha, size = input$scatter_size) +
+      labs(title = scatter_plot_title())
+  })
+  
+  output$correlation <- renderText({
+    r <- round(cor(marathon_data[[input$scatter_x]], marathon_data[[input$scatter_y]], use = "pairwise"), 3)
+    paste0("Correlation = ", r, ". Note: If the relationship between the two variables is not linear, the correlation coefficient will not be meaningful.")
+  })
+  
+  
+  output$lmoutput <- renderPrint({
+    x <- marathon_data %>% pull(input$scatter_x)
+    y <- marathon_data %>% pull(input$scatter_y)
+    print(summary(lm(y ~ x, data = marathon_data)), digits = 3, signif.stars = FALSE)
+  })
+  
+  
+  output$scatter_marathontable <- renderDataTable({
+    if(input$scatter_show_data){
+      DT::datatable(data = marathon_data %>% select(1:7), options = list(pageLength = 10), rownames = FALSE)
+    }
+  })
+  
+  output$brushedPoints <- renderDataTable({
+    brushed <- brushedPoints(marathon_data, input$plot_brush)
+    if(nrow(brushed) == 0) {
+      return(NULL)
+    }
+    DT::datatable(data = brushed, options = list(pageLength = 10), rownames = FALSE)
+  })
+}
+
+# Create the Shiny app object --------------------------------------------------
+shinyApp(ui = ui, server = server)
